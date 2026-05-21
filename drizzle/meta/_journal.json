@@ -8,6 +8,13 @@
       "when": 1776368730669,
       "tag": "0000_melted_rachel_grey",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1779393826368,
+      "tag": "0001_special_thaddeus_ross",
+      "breakpoints": true
     }
   ]
 }
