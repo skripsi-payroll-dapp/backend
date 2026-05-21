@@ -1,8 +1,10 @@
 import { Router, Request, Response } from "express";
 import postgres from "postgres";
 import { db } from "../db";
-import { auditLogs } from "../db/schema";
-import { AuthRequest } from "../middleware/auth";
+import { auditLogs, employees } from "../db/schema";
+import { requireAuth, AuthRequest } from "../middleware/auth";
+import { decrypt } from "../services/encryption";
+import { inArray } from "drizzle-orm";
 
 export const complianceRouter = Router();
 
@@ -13,12 +15,12 @@ const sql = postgres(process.env.DATABASE_URL!);
  * GET /compliance/export/:hr?month=2025-01
  *
  * Exports per-employee BPJS/PPh21 breakdown as CSV for monthly reconciliation.
- * Reads from Ponder-indexed salary_claim table (FR-C03).
+ * Reads from Ponder-indexed salary_claim table (FR-C03) and decrypts employee profiles.
  *
  * Query params:
  *   month — YYYY-MM format (required)
  */
-complianceRouter.get("/export/:hr", async (req: Request, res: Response) => {
+complianceRouter.get("/export/:hr", requireAuth, async (req: Request, res: Response) => {
   const hrAddress = String(req.params.hr).toLowerCase();
 
   // HR can only export their own company's data
@@ -64,11 +66,34 @@ complianceRouter.get("/export/:hr", async (req: Request, res: Response) => {
       return res.status(404).json({ error: "No claims found for this period" });
     }
 
+    // Fetch and decrypt employee profiles
+    const employeeAddresses = rows.map((r) => r.employee.toLowerCase());
+    const empProfiles = await db
+      .select()
+      .from(employees)
+      .where(inArray(employees.address, employeeAddresses));
+
+    const profileMap = new Map<string, { name: string; nik: string; phone: string }>();
+    for (const emp of empProfiles) {
+      try {
+        profileMap.set(emp.address.toLowerCase(), {
+          name: decrypt(emp.name),
+          nik: decrypt(emp.nik),
+          phone: decrypt(emp.phone),
+        });
+      } catch (err) {
+        console.error(`[compliance] Decryption failed for employee ${emp.address}:`, err);
+      }
+    }
+
     // Build CSV
-    const header = "employee,claim_count,total_accrued_idrx,compliance_5pct_idrx,severance_2pct_idrx";
-    const lines  = rows.map((r) =>
-      `${r.employee},${r.claim_count},${r.total_accrued},${r.total_compliance},${r.total_severance}`
-    );
+    const header = "employee_address,employee_name,employee_nik,employee_phone,claim_count,total_accrued_idrx,compliance_bpjs_idrx,severance_idrx";
+    const lines  = rows.map((r) => {
+      const addr = r.employee.toLowerCase();
+      const profile = profileMap.get(addr) || { name: "N/A", nik: "N/A", phone: "N/A" };
+      const escapedName = profile.name.includes(",") ? `"${profile.name}"` : profile.name;
+      return `${r.employee},${escapedName},${profile.nik},${profile.phone},${r.claim_count},${r.total_accrued},${r.total_compliance},${r.total_severance}`;
+    });
     const csv = [header, ...lines].join("\n");
 
     // Audit log

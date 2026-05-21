@@ -12,6 +12,8 @@ import { startLiquidationCron }  from "./services/liquidation";
 import { startPaymasterMonitor } from "./services/paymasterMonitor";
 import { createWsServer }        from "./services/wsServer";
 
+import { globalErrorHandler }     from "./middleware/errorHandler";
+
 const app  = express();
 const PORT = Number(process.env.PORT ?? 3001);
 
@@ -36,6 +38,9 @@ app.use("/webhook",    webhookRouter);                 // Alchemy HMAC — no JW
 
 // ── 404 handler ────────────────────────────────────────────────────────────────
 app.use((_req, res) => res.status(404).json({ error: "Not found" }));
+
+// ── Global Error Handler ───────────────────────────────────────────────────────
+app.use(globalErrorHandler);
 
 // ── Start ──────────────────────────────────────────────────────────────────────
 const server = app.listen(PORT, () => {

@@ -30,3 +30,21 @@ export const webhookEvents = appSchema.table("webhook_events", {
   processed:   boolean("processed").notNull().default(false),
   receivedAt:  timestamp("received_at").notNull().defaultNow(),
 });
+
+// ── Employee Profiles (Encrypted PII for UU PDP compliance) ───────────────────
+export const employees = appSchema.table("employees", {
+  address:   text("address").primaryKey(),      // employee wallet address (lowercase)
+  name:      text("name").notNull(),            // AES-256-GCM encrypted name
+  nik:       text("nik").notNull(),             // AES-256-GCM encrypted NIK (16-digit ID)
+  phone:     text("phone").notNull(),           // AES-256-GCM encrypted phone number
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+});
+
+// ── Active Sessions (JWT blocklist/revocation mapping) ────────────────────────
+export const sessions = appSchema.table("sessions", {
+  jti:       text("jti").primaryKey(),          // JWT Unique ID
+  address:   text("address").notNull(),          // wallet address (lowercase)
+  expiresAt: timestamp("expires_at").notNull(), // token expiration timestamp
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});

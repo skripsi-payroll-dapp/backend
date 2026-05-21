@@ -1,6 +1,12 @@
 import { Router, Request, Response } from "express";
 import jwt from "jsonwebtoken";
 import { verifyMessage } from "viem";
+import crypto from "crypto";
+import { db } from "../db";
+import { sessions, employees } from "../db/schema";
+import { eq } from "drizzle-orm";
+import { requireAuth, AuthRequest } from "../middleware/auth";
+import { encrypt, decrypt } from "../services/encryption";
 
 export const authRouter = Router();
 
@@ -8,18 +14,18 @@ export const authRouter = Router();
 const ACCESS_TTL_SECONDS  = 15 * 60;           // 15 minutes
 const REFRESH_TTL_SECONDS = 7 * 24 * 60 * 60;  // 7 days
 
-function issueTokens(address: string): { accessToken: string; refreshToken: string } {
+function issueTokens(address: string, jti: string): { accessToken: string; refreshToken: string } {
   const secret        = process.env.JWT_SECRET!;
   const refreshSecret = process.env.JWT_REFRESH_SECRET!;
 
   const accessToken = jwt.sign(
-    { address },
+    { address, jti },
     secret,
     { expiresIn: ACCESS_TTL_SECONDS }
   );
 
   const refreshToken = jwt.sign(
-    { address },
+    { address, jti },
     refreshSecret,
     { expiresIn: REFRESH_TTL_SECONDS }
   );
@@ -31,15 +37,7 @@ function issueTokens(address: string): { accessToken: string; refreshToken: stri
  * POST /auth/login
  *
  * Verifies an EIP-191 personal_sign signature.
- * Frontend (Privy Smart Account) signs a challenge message with the employee's
- * embedded wallet and submits it here to obtain a JWT pair.
- *
- * Body: { address: string, message: string, signature: string }
- *
- * The `message` must contain the current Unix timestamp so the backend can
- * reject replayed logins (timestamp must be within ±5 minutes of server time).
- *
- * Returns: { accessToken, refreshToken, address }
+ * Saves the session ID (jti) and expiry to database for stateless revocation.
  */
 authRouter.post("/login", async (req: Request, res: Response) => {
   const { address, message, signature } = req.body as {
@@ -83,7 +81,22 @@ authRouter.post("/login", async (req: Request, res: Response) => {
   }
 
   const normalized = address.toLowerCase();
-  const tokens     = issueTokens(normalized);
+  const jti = crypto.randomUUID();
+  const expiresAt = new Date(Date.now() + REFRESH_TTL_SECONDS * 1000);
+
+  try {
+    // Record the active session in database
+    await db.insert(sessions).values({
+      jti,
+      address: normalized,
+      expiresAt,
+    });
+  } catch (err) {
+    console.error("[auth] Failed to save session:", err);
+    return res.status(500).json({ error: "Session creation failed" });
+  }
+
+  const tokens = issueTokens(normalized, jti);
 
   return res.json({ ...tokens, address: normalized });
 });
@@ -92,12 +105,9 @@ authRouter.post("/login", async (req: Request, res: Response) => {
  * POST /auth/refresh
  *
  * Exchanges a valid refresh token for a new access token.
- * Refresh tokens are stateless — revocation requires rotating JWT_REFRESH_SECRET.
- *
- * Body: { refreshToken: string }
- * Returns: { accessToken }
+ * Validates the session jti in the database to support revocation.
  */
-authRouter.post("/refresh", (req: Request, res: Response) => {
+authRouter.post("/refresh", async (req: Request, res: Response) => {
   const { refreshToken } = req.body as { refreshToken: string };
 
   if (!refreshToken) {
@@ -112,14 +122,133 @@ authRouter.post("/refresh", (req: Request, res: Response) => {
   }
 
   try {
-    const payload    = jwt.verify(refreshToken, refreshSecret) as { address: string };
+    const payload = jwt.verify(refreshToken, refreshSecret) as { address: string; jti: string };
+    const normalized = payload.address.toLowerCase();
+
+    // Check if the session is still active/valid in the database
+    const [session] = await db
+      .select()
+      .from(sessions)
+      .where(eq(sessions.jti, payload.jti));
+
+    if (!session || new Date() > new Date(session.expiresAt)) {
+      return res.status(401).json({ error: "Session has been revoked or expired" });
+    }
+
     const accessToken = jwt.sign(
-      { address: payload.address.toLowerCase() },
+      { address: normalized, jti: payload.jti },
       secret,
       { expiresIn: ACCESS_TTL_SECONDS }
     );
+
     return res.json({ accessToken });
   } catch {
     return res.status(401).json({ error: "Invalid or expired refresh token" });
+  }
+});
+
+/**
+ * POST /auth/logout
+ *
+ * Revokes the current session by deleting its jti from the sessions database.
+ */
+authRouter.post("/logout", requireAuth, async (req: Request, res: Response) => {
+  const authReq = req as AuthRequest;
+  const jti = authReq.auth.jti;
+
+  try {
+    await db.delete(sessions).where(eq(sessions.jti, jti));
+    return res.json({ message: "Successfully logged out and session revoked" });
+  } catch (err) {
+    console.error("[auth] Logout error:", err);
+    return res.status(500).json({ error: "Logout failed" });
+  }
+});
+
+/**
+ * POST /auth/profile
+ *
+ * Registers or updates an employee's Personally Identifiable Information (PII).
+ * Encrypts Name, NIK, and Phone using AES-256-GCM before writing to database.
+ */
+authRouter.post("/profile", requireAuth, async (req: Request, res: Response) => {
+  const authReq = req as AuthRequest;
+  const callerAddress = authReq.auth.address;
+  const { name, nik, phone } = req.body as { name?: string; nik?: string; phone?: string };
+
+  if (!name || !nik || !phone) {
+    return res.status(400).json({ error: "name, nik, and phone are required" });
+  }
+
+  // Indonesian KTP NIK must be exactly 16 numeric digits
+  if (!/^\d{16}$/.test(nik)) {
+    return res.status(400).json({ error: "NIK must be exactly 16 digits" });
+  }
+
+  try {
+    const encryptedName = encrypt(name);
+    const encryptedNik  = encrypt(nik);
+    const encryptedPhone = encrypt(phone);
+
+    await db
+      .insert(employees)
+      .values({
+        address: callerAddress,
+        name: encryptedName,
+        nik: encryptedNik,
+        phone: encryptedPhone,
+        updatedAt: new Date(),
+      })
+      .onConflictDoUpdate({
+        target: employees.address,
+        set: {
+          name: encryptedName,
+          nik: encryptedNik,
+          phone: encryptedPhone,
+          updatedAt: new Date(),
+        },
+      });
+
+    return res.json({ success: true, message: "Employee profile encrypted and saved successfully" });
+  } catch (err) {
+    console.error("[auth] Profile save error:", err);
+    return res.status(500).json({ error: "Failed to save profile" });
+  }
+});
+
+/**
+ * GET /auth/profile
+ *
+ * Fetches the caller's employee profile and decrypts the PII.
+ */
+authRouter.get("/profile", requireAuth, async (req: Request, res: Response) => {
+  const authReq = req as AuthRequest;
+  const callerAddress = authReq.auth.address;
+
+  try {
+    const [emp] = await db
+      .select()
+      .from(employees)
+      .where(eq(employees.address, callerAddress));
+
+    if (!emp) {
+      return res.status(404).json({ error: "Profile not found" });
+    }
+
+    const decryptedName = decrypt(emp.name);
+    const decryptedNik  = decrypt(emp.nik);
+    const decryptedPhone = decrypt(emp.phone);
+
+    return res.json({
+      address: emp.address,
+      name: decryptedName,
+      nik: decryptedNik,
+      phone: decryptedPhone,
+      createdAt: emp.createdAt,
+      updatedAt: emp.updatedAt,
+    });
+  } catch (err) {
+    console.error("[auth] Profile fetch error:", err);
+    return res.status(500).json({ error: "Failed to retrieve profile" });
   }
 });

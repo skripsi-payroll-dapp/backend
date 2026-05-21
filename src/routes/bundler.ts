@@ -8,18 +8,28 @@ import { AuthRequest } from "../middleware/auth";
 
 export const bundlerRouter = Router();
 
-// Shape of a UserOperation (ERC-4337) sent by the frontend via Privy
+// Shape of an ERC-4337 UserOperation supporting both EntryPoint v0.6 (ZeroDev v2 / Biconomy v3)
+// and EntryPoint v0.7 (ZeroDev v3 / Biconomy v4) specifications.
 interface UserOperation {
-  sender:               string;
-  nonce:                string;
-  callData:             string;
-  callGasLimit:         string;
-  verificationGasLimit: string;
-  preVerificationGas:   string;
-  maxFeePerGas:         string;
-  maxPriorityFeePerGas: string;
-  paymasterAndData:     string;
-  signature:            string;
+  sender:                         string;
+  nonce:                          string;
+  initCode?:                      string; // v0.6
+  factory?:                       string; // v0.7
+  factoryData?:                   string; // v0.7
+  callData:                       string;
+  callGasLimit?:                  string; // v0.6
+  verificationGasLimit?:          string; // v0.6
+  preVerificationGas:             string;
+  maxFeePerGas:                   string;
+  maxPriorityFeePerGas:           string;
+  paymasterAndData?:              string; // v0.6
+  paymaster?:                     string; // v0.7
+  paymasterVerificationGasLimit?: string; // v0.7
+  paymasterPostOpGasLimit?:       string; // v0.7
+  paymasterData?:                 string; // v0.7
+  signature:                      string;
+  accountGasLimits?:              string; // v0.7
+  gasFees?:                       string; // v0.7
 }
 
 /**
