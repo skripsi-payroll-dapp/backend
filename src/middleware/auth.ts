@@ -3,6 +3,7 @@ import jwt from "jsonwebtoken";
 import { db } from "../db";
 import { sessions } from "../db/schema";
 import { eq } from "drizzle-orm";
+import { AppError } from "./errorHandler";
 
 // Extend Express Request so downstream routes can read the verified address and session ID
 export interface AuthRequest extends Request {
@@ -20,16 +21,14 @@ export async function requireAuth(req: Request, res: Response, next: NextFunctio
   const header = req.headers.authorization;
 
   if (!header || !header.startsWith("Bearer ")) {
-    res.status(401).json({ error: "Missing or malformed Authorization header" });
-    return;
+    return next(new AppError("Missing or malformed Authorization header", 401, "UNAUTHORIZED"));
   }
 
   const token  = header.slice(7);
   const secret = process.env.JWT_SECRET;
 
   if (!secret) {
-    res.status(500).json({ error: "Server misconfiguration: JWT_SECRET not set" });
-    return;
+    return next(new AppError("Server misconfiguration: JWT_SECRET not set", 500, "INTERNAL_ERROR"));
   }
 
   try {
@@ -43,16 +42,14 @@ export async function requireAuth(req: Request, res: Response, next: NextFunctio
       .where(eq(sessions.jti, payload.jti));
 
     if (!session) {
-      res.status(401).json({ error: "Session has been revoked or logged out" });
-      return;
+      return next(new AppError("Session has been revoked or logged out", 401, "UNAUTHORIZED"));
     }
 
     // Verify session expiration
     if (new Date() > new Date(session.expiresAt)) {
       // Clean up expired session asynchronously
       db.delete(sessions).where(eq(sessions.jti, payload.jti)).catch(console.error);
-      res.status(401).json({ error: "Session has expired" });
-      return;
+      return next(new AppError("Session has expired", 401, "UNAUTHORIZED"));
     }
 
     (req as AuthRequest).auth = { 
@@ -61,6 +58,6 @@ export async function requireAuth(req: Request, res: Response, next: NextFunctio
     };
     next();
   } catch (err) {
-    res.status(401).json({ error: "Invalid or expired access token" });
+    return next(new AppError("Invalid or expired access token", 401, "UNAUTHORIZED"));
   }
 }

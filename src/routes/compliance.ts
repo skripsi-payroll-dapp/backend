@@ -1,4 +1,5 @@
-import { Router, Request, Response } from "express";
+import { Router, Request, Response, NextFunction } from "express";
+import { AppError } from "../middleware/errorHandler";
 import postgres from "postgres";
 import { db } from "../db";
 import { auditLogs, employees } from "../db/schema";
@@ -20,19 +21,19 @@ const sql = postgres(process.env.DATABASE_URL!);
  * Query params:
  *   month — YYYY-MM format (required)
  */
-complianceRouter.get("/export/:hr", requireAuth, async (req: Request, res: Response) => {
+complianceRouter.get("/export/:hr", requireAuth, async (req: Request, res: Response, next: NextFunction) => {
   const hrAddress = String(req.params.hr).toLowerCase();
 
   // HR can only export their own company's data
   const callerAddress = (req as AuthRequest).auth.address;
   if (callerAddress !== hrAddress) {
-    return res.status(403).json({ error: "Forbidden: you can only export your own company data" });
+    return next(new AppError("Forbidden: you can only export your own company data", 403, "FORBIDDEN"));
   }
 
   const month = req.query.month as string;
 
   if (!month || !/^\d{4}-\d{2}$/.test(month)) {
-    return res.status(400).json({ error: "Query param 'month' is required in YYYY-MM format" });
+    return next(new AppError("Query param 'month' is required in YYYY-MM format", 400, "BAD_REQUEST"));
   }
 
   const [year, mon] = month.split("-").map(Number);
@@ -63,7 +64,7 @@ complianceRouter.get("/export/:hr", requireAuth, async (req: Request, res: Respo
     `;
 
     if (rows.length === 0) {
-      return res.status(404).json({ error: "No claims found for this period" });
+      return next(new AppError("No claims found for this period", 404, "NOT_FOUND"));
     }
 
     // Fetch and decrypt employee profiles
@@ -108,7 +109,7 @@ complianceRouter.get("/export/:hr", requireAuth, async (req: Request, res: Respo
     return res.send(csv);
   } catch (err) {
     console.error("[compliance] Export error:", err);
-    return res.status(500).json({ error: "Export failed" });
+    return next(new AppError("Export failed", 500, "INTERNAL_ERROR"));
   }
 });
 
@@ -117,19 +118,19 @@ complianceRouter.get("/export/:hr", requireAuth, async (req: Request, res: Respo
  *
  * Returns JSON summary — used by HR dashboard before download.
  */
-complianceRouter.get("/summary/:hr", async (req: Request, res: Response) => {
+complianceRouter.get("/summary/:hr", async (req: Request, res: Response, next: NextFunction) => {
   const hrAddress = String(req.params.hr).toLowerCase();
 
   // HR can only view their own company's summary
   const callerAddress = (req as AuthRequest).auth.address;
   if (callerAddress !== hrAddress) {
-    return res.status(403).json({ error: "Forbidden: you can only view your own company summary" });
+    return next(new AppError("Forbidden: you can only view your own company summary", 403, "FORBIDDEN"));
   }
 
   const month = req.query.month as string;
 
   if (!month || !/^\d{4}-\d{2}$/.test(month)) {
-    return res.status(400).json({ error: "Query param 'month' is required in YYYY-MM format" });
+    return next(new AppError("Query param 'month' is required in YYYY-MM format", 400, "BAD_REQUEST"));
   }
 
   const [year, mon] = month.split("-").map(Number);
@@ -186,6 +187,6 @@ complianceRouter.get("/summary/:hr", async (req: Request, res: Response) => {
     });
   } catch (err) {
     console.error("[compliance] Summary error:", err);
-    return res.status(500).json({ error: "Summary failed" });
+    return next(new AppError("Summary failed", 500, "INTERNAL_ERROR"));
   }
 });

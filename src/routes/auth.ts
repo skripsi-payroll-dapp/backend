@@ -1,4 +1,5 @@
-import { Router, Request, Response } from "express";
+import { Router, Request, Response, NextFunction } from "express";
+import { AppError } from "../middleware/errorHandler";
 import jwt from "jsonwebtoken";
 import { verifyMessage } from "viem";
 import crypto from "crypto";
@@ -39,7 +40,7 @@ function issueTokens(address: string, jti: string): { accessToken: string; refre
  * Verifies an EIP-191 personal_sign signature.
  * Saves the session ID (jti) and expiry to database for stateless revocation.
  */
-authRouter.post("/login", async (req: Request, res: Response) => {
+authRouter.post("/login", async (req: Request, res: Response, next: NextFunction) => {
   const { address, message, signature } = req.body as {
     address:   string;
     message:   string;
@@ -47,13 +48,13 @@ authRouter.post("/login", async (req: Request, res: Response) => {
   };
 
   if (!address || !message || !signature) {
-    return res.status(400).json({ error: "address, message, and signature are required" });
+    return next(new AppError("address, message, and signature are required", 400, "BAD_REQUEST"));
   }
 
   // Replay protection — message must embed a timestamp within ±5 minutes
   const tsMatch = message.match(/Timestamp:\s*(\d+)/);
   if (!tsMatch) {
-    return res.status(400).json({ error: "Message must include 'Timestamp: <unix_seconds>'" });
+    return next(new AppError("Message must include 'Timestamp: <unix_seconds>'", 400, "BAD_REQUEST"));
   }
 
   const msgTs   = Number(tsMatch[1]);
@@ -61,7 +62,7 @@ authRouter.post("/login", async (req: Request, res: Response) => {
   const skewSec = 5 * 60; // 5 minutes tolerance
 
   if (Math.abs(nowTs - msgTs) > skewSec) {
-    return res.status(401).json({ error: "Login message has expired. Request a new challenge." });
+    return next(new AppError("Login message has expired. Request a new challenge.", 401, "UNAUTHORIZED"));
   }
 
   // EIP-191 signature verification via viem
@@ -73,11 +74,11 @@ authRouter.post("/login", async (req: Request, res: Response) => {
       signature: signature as `0x${string}`,
     });
   } catch {
-    return res.status(400).json({ error: "Malformed signature" });
+    return next(new AppError("Malformed signature", 400, "BAD_REQUEST"));
   }
 
   if (!valid) {
-    return res.status(401).json({ error: "Signature verification failed" });
+    return next(new AppError("Signature verification failed", 401, "UNAUTHORIZED"));
   }
 
   const normalized = address.toLowerCase();
@@ -93,7 +94,7 @@ authRouter.post("/login", async (req: Request, res: Response) => {
     });
   } catch (err) {
     console.error("[auth] Failed to save session:", err);
-    return res.status(500).json({ error: "Session creation failed" });
+    return next(new AppError("Session creation failed", 500, "INTERNAL_ERROR"));
   }
 
   const tokens = issueTokens(normalized, jti);
@@ -107,18 +108,18 @@ authRouter.post("/login", async (req: Request, res: Response) => {
  * Exchanges a valid refresh token for a new access token.
  * Validates the session jti in the database to support revocation.
  */
-authRouter.post("/refresh", async (req: Request, res: Response) => {
+authRouter.post("/refresh", async (req: Request, res: Response, next: NextFunction) => {
   const { refreshToken } = req.body as { refreshToken: string };
 
   if (!refreshToken) {
-    return res.status(400).json({ error: "refreshToken is required" });
+    return next(new AppError("refreshToken is required", 400, "BAD_REQUEST"));
   }
 
   const secret        = process.env.JWT_SECRET!;
   const refreshSecret = process.env.JWT_REFRESH_SECRET!;
 
   if (!secret || !refreshSecret) {
-    return res.status(500).json({ error: "Server misconfiguration: JWT secrets not set" });
+    return next(new AppError("Server misconfiguration: JWT secrets not set", 500, "INTERNAL_ERROR"));
   }
 
   try {
@@ -132,7 +133,7 @@ authRouter.post("/refresh", async (req: Request, res: Response) => {
       .where(eq(sessions.jti, payload.jti));
 
     if (!session || new Date() > new Date(session.expiresAt)) {
-      return res.status(401).json({ error: "Session has been revoked or expired" });
+      return next(new AppError("Session has been revoked or expired", 401, "UNAUTHORIZED"));
     }
 
     const accessToken = jwt.sign(
@@ -143,7 +144,7 @@ authRouter.post("/refresh", async (req: Request, res: Response) => {
 
     return res.json({ accessToken });
   } catch {
-    return res.status(401).json({ error: "Invalid or expired refresh token" });
+    return next(new AppError("Invalid or expired refresh token", 401, "UNAUTHORIZED"));
   }
 });
 
@@ -152,7 +153,7 @@ authRouter.post("/refresh", async (req: Request, res: Response) => {
  *
  * Revokes the current session by deleting its jti from the sessions database.
  */
-authRouter.post("/logout", requireAuth, async (req: Request, res: Response) => {
+authRouter.post("/logout", requireAuth, async (req: Request, res: Response, next: NextFunction) => {
   const authReq = req as AuthRequest;
   const jti = authReq.auth.jti;
 
@@ -161,7 +162,7 @@ authRouter.post("/logout", requireAuth, async (req: Request, res: Response) => {
     return res.json({ message: "Successfully logged out and session revoked" });
   } catch (err) {
     console.error("[auth] Logout error:", err);
-    return res.status(500).json({ error: "Logout failed" });
+    return next(new AppError("Logout failed", 500, "INTERNAL_ERROR"));
   }
 });
 
@@ -171,18 +172,18 @@ authRouter.post("/logout", requireAuth, async (req: Request, res: Response) => {
  * Registers or updates an employee's Personally Identifiable Information (PII).
  * Encrypts Name, NIK, and Phone using AES-256-GCM before writing to database.
  */
-authRouter.post("/profile", requireAuth, async (req: Request, res: Response) => {
+authRouter.post("/profile", requireAuth, async (req: Request, res: Response, next: NextFunction) => {
   const authReq = req as AuthRequest;
   const callerAddress = authReq.auth.address;
   const { name, nik, phone } = req.body as { name?: string; nik?: string; phone?: string };
 
   if (!name || !nik || !phone) {
-    return res.status(400).json({ error: "name, nik, and phone are required" });
+    return next(new AppError("name, nik, and phone are required", 400, "BAD_REQUEST"));
   }
 
   // Indonesian KTP NIK must be exactly 16 numeric digits
   if (!/^\d{16}$/.test(nik)) {
-    return res.status(400).json({ error: "NIK must be exactly 16 digits" });
+    return next(new AppError("NIK must be exactly 16 digits", 400, "BAD_REQUEST"));
   }
 
   try {
@@ -212,7 +213,7 @@ authRouter.post("/profile", requireAuth, async (req: Request, res: Response) => 
     return res.json({ success: true, message: "Employee profile encrypted and saved successfully" });
   } catch (err) {
     console.error("[auth] Profile save error:", err);
-    return res.status(500).json({ error: "Failed to save profile" });
+    return next(new AppError("Failed to save profile", 500, "INTERNAL_ERROR"));
   }
 });
 
@@ -221,7 +222,7 @@ authRouter.post("/profile", requireAuth, async (req: Request, res: Response) => 
  *
  * Fetches the caller's employee profile and decrypts the PII.
  */
-authRouter.get("/profile", requireAuth, async (req: Request, res: Response) => {
+authRouter.get("/profile", requireAuth, async (req: Request, res: Response, next: NextFunction) => {
   const authReq = req as AuthRequest;
   const callerAddress = authReq.auth.address;
 
@@ -232,7 +233,7 @@ authRouter.get("/profile", requireAuth, async (req: Request, res: Response) => {
       .where(eq(employees.address, callerAddress));
 
     if (!emp) {
-      return res.status(404).json({ error: "Profile not found" });
+      return next(new AppError("Profile not found", 404, "NOT_FOUND"));
     }
 
     const decryptedName = decrypt(emp.name);
@@ -249,6 +250,6 @@ authRouter.get("/profile", requireAuth, async (req: Request, res: Response) => {
     });
   } catch (err) {
     console.error("[auth] Profile fetch error:", err);
-    return res.status(500).json({ error: "Failed to retrieve profile" });
+    return next(new AppError("Failed to retrieve profile", 500, "INTERNAL_ERROR"));
   }
 });

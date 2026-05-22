@@ -11,6 +11,8 @@ import { requireAuth }           from "./middleware/auth";
 import { startLiquidationCron }  from "./services/liquidation";
 import { startPaymasterMonitor } from "./services/paymasterMonitor";
 import { createWsServer }        from "./services/wsServer";
+import swaggerUi                 from "swagger-ui-express";
+import { swaggerSpecs }          from "./swagger";
 
 import { globalErrorHandler }     from "./middleware/errorHandler";
 
@@ -29,7 +31,19 @@ app.use("/webhook", express.raw({ type: "application/json" }), (req, _res, next)
 });
 app.use(express.json());
 
+// ── Swagger ────────────────────────────────────────────────────────────────────
+app.use("/api-docs", swaggerUi.serve, swaggerUi.setup(swaggerSpecs));
+
 // ── Routes ─────────────────────────────────────────────────────────────────────
+/**
+ * @swagger
+ * /health:
+ *   get:
+ *     summary: Check API Health
+ *     responses:
+ *       200:
+ *         description: OK
+ */
 app.get("/health", (_req, res) => res.json({ status: "ok" }));
 app.use("/auth",       authRouter);                    // public — issues JWT
 app.use("/bundler",    requireAuth, bundlerRouter);    // NFR-2: JWT required

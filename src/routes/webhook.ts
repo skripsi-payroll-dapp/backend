@@ -1,4 +1,5 @@
-import { Router, Request, Response } from "express";
+import { Router, Request, Response, NextFunction } from "express";
+import { AppError } from "../middleware/errorHandler";
 import { createHmac } from "crypto";
 import { eq } from "drizzle-orm";
 import { keccak256, toHex, decodeAbiParameters } from "viem";
@@ -35,12 +36,12 @@ function verifyAlchemySignature(body: string, signature: string): boolean {
  * Decodes LowVaultBalance and SalaryClaimed events, persists an audit log,
  * and broadcasts a WebSocket message to all connected frontend clients.
  */
-webhookRouter.post("/alchemy", async (req: Request, res: Response) => {
+webhookRouter.post("/alchemy", async (req: Request, res: Response, next: NextFunction) => {
   const signature = req.headers["x-alchemy-signature"] as string;
   const rawBody   = JSON.stringify(req.body);
 
   if (!verifyAlchemySignature(rawBody, signature)) {
-    return res.status(401).json({ error: "Invalid signature" });
+    return next(new AppError("Invalid signature", 401, "UNAUTHORIZED"));
   }
 
   const payload = req.body as {

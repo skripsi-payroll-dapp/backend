@@ -1,4 +1,5 @@
-import { Router, Request, Response } from "express";
+import { Router, Request, Response, NextFunction } from "express";
+import { AppError } from "../middleware/errorHandler";
 import { createPublicClient, http } from "viem";
 import { baseSepolia } from "viem/chains";
 import { checkAndIncrement } from "../services/rateLimiter";
@@ -40,14 +41,14 @@ interface UserOperation {
  *
  * Body: { userOp: UserOperation, entryPoint: string }
  */
-bundlerRouter.post("/relay", async (req: Request, res: Response) => {
+bundlerRouter.post("/relay", async (req: Request, res: Response, next: NextFunction) => {
   const { userOp, entryPoint } = req.body as {
     userOp:     UserOperation;
     entryPoint: string;
   };
 
   if (!userOp?.sender) {
-    return res.status(400).json({ error: "Missing userOp.sender" });
+    return next(new AppError("Missing userOp.sender", 400, "BAD_REQUEST"));
   }
 
   const employee = userOp.sender.toLowerCase();
@@ -55,22 +56,19 @@ bundlerRouter.post("/relay", async (req: Request, res: Response) => {
   // Verify caller owns the Smart Account — prevents relaying ops for other users
   const callerAddress = (req as AuthRequest).auth.address;
   if (callerAddress !== employee) {
-    return res.status(403).json({ error: "Forbidden: JWT address does not match userOp.sender" });
+    return next(new AppError("Forbidden: JWT address does not match userOp.sender", 403, "FORBIDDEN"));
   }
 
   // ── Rate limit check (FR-B02: max 10 claims/hour per employee) ──────────────
   const allowed = await checkAndIncrement(employee);
   if (!allowed) {
-    return res.status(429).json({
-      error: "Rate limit exceeded",
-      message: "Max 10 EWA claims per hour. Try again later.",
-    });
+    return next(new AppError("Rate limit exceeded", 429, "TOO_MANY_REQUESTS"));
   }
 
   // ── Forward to Pimlico bundler ────────────────────────────────────────────
   const bundlerUrl = process.env.BUNDLER_RPC_URL;
   if (!bundlerUrl) {
-    return res.status(500).json({ error: "Bundler RPC not configured" });
+    return next(new AppError("Bundler RPC not configured", 500, "INTERNAL_ERROR"));
   }
 
   try {
@@ -89,7 +87,7 @@ bundlerRouter.post("/relay", async (req: Request, res: Response) => {
 
     if (result.error) {
       console.error("[bundler] Pimlico error:", result.error);
-      return res.status(502).json({ error: "Bundler rejected UserOperation", detail: result.error });
+      return next(new AppError("Bundler rejected UserOperation", 502, "BAD_GATEWAY"));
     }
 
     const userOpHash = result.result!;
@@ -105,7 +103,7 @@ bundlerRouter.post("/relay", async (req: Request, res: Response) => {
     return res.json({ userOpHash });
   } catch (err) {
     console.error("[bundler] Relay error:", err);
-    return res.status(502).json({ error: "Failed to reach bundler" });
+    return next(new AppError("Failed to reach bundler", 502, "BAD_GATEWAY"));
   }
 });
 
@@ -114,7 +112,7 @@ bundlerRouter.post("/relay", async (req: Request, res: Response) => {
  *
  * Polls Pimlico for UserOperation receipt.
  */
-bundlerRouter.get("/status/:userOpHash", async (req: Request, res: Response) => {
+bundlerRouter.get("/status/:userOpHash", async (req: Request, res: Response, next: NextFunction) => {
   const { userOpHash } = req.params;
   const bundlerUrl = process.env.BUNDLER_RPC_URL!;
 
@@ -133,6 +131,6 @@ bundlerRouter.get("/status/:userOpHash", async (req: Request, res: Response) => 
     const data = (await response.json()) as { result: unknown };
     return res.json({ receipt: data.result });
   } catch (err) {
-    return res.status(502).json({ error: "Failed to fetch receipt" });
+    return next(new AppError("Failed to fetch receipt", 502, "BAD_GATEWAY"));
   }
 });
