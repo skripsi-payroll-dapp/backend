@@ -4,6 +4,7 @@ import { privateKeyToAccount } from "viem/accounts";
 import { baseSepolia } from "viem/chains";
 import { db } from "../db";
 import { auditLogs } from "../db/schema";
+import postgres from "postgres";
 
 // Minimal ABI — only what we need for liquidation
 const LIQUIDITY_ABI = parseAbi([
@@ -11,26 +12,24 @@ const LIQUIDITY_ABI = parseAbi([
   "event LoanDefaulted(address indexed borrower, uint256 outstanding)",
 ]);
 
-// Ponder exposes a GraphQL/REST API — we query it to find overdue loans
-const PONDER_API_URL = process.env.PONDER_API_URL ?? "http://localhost:42069";
+// Direct SQL client for reading Ponder-indexed tables (public schema)
+const sql = postgres(process.env.DATABASE_URL!);
 
 async function fetchOverdueLoans(): Promise<string[]> {
   const now = Math.floor(Date.now() / 1000);
-  const gracePeriod = 7 * 24 * 3600; // 7 days in seconds
+  const gracePeriod = 7 * 24 * 3600;
+  const cutoff = now - gracePeriod;
 
-  // Query Ponder's SQL endpoint for active loans past grace period
-  const res = await fetch(
-    `${PONDER_API_URL}/sql/select?` +
-    `query=SELECT id FROM loan_record WHERE status='Active' AND due_ts < ${now - gracePeriod}`
-  );
-
-  if (!res.ok) {
-    console.error("[liquidation] Failed to fetch overdue loans:", res.statusText);
+  try {
+    const rows = await sql<Array<{ id: string }>>`
+      SELECT id FROM loan_record
+      WHERE status = 'Active' AND due_ts < ${cutoff}
+    `;
+    return rows.map((r) => r.id);
+  } catch (err) {
+    console.error("[liquidation] Failed to fetch overdue loans:", err);
     return [];
   }
-
-  const data = (await res.json()) as { rows: Array<{ id: string }> };
-  return data.rows.map((r) => r.id);
 }
 
 async function liquidate(borrower: string): Promise<void> {

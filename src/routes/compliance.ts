@@ -118,7 +118,7 @@ complianceRouter.get("/export/:hr", requireAuth, async (req: Request, res: Respo
  *
  * Returns JSON summary — used by HR dashboard before download.
  */
-complianceRouter.get("/summary/:hr", async (req: Request, res: Response, next: NextFunction) => {
+complianceRouter.get("/summary/:hr", requireAuth, async (req: Request, res: Response, next: NextFunction) => {
   const hrAddress = String(req.params.hr).toLowerCase();
 
   // HR can only view their own company's summary
