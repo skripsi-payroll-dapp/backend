@@ -270,6 +270,69 @@ const options = {
           responses: { '200': { description: 'Webhook processed' } },
         },
       },
+
+      // ── Registration ─────────────────────────────────────────────────────────
+      '/registration/request': {
+        post: {
+          summary: 'Submit employee registration request',
+          tags: ['Registration'],
+          security: [],
+          requestBody: {
+            required: true,
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  required: ['address'],
+                  properties: {
+                    address: { type: 'string', example: '0xabc...' },
+                    email: { type: 'string', example: 'budi@gmail.com', nullable: true },
+                  },
+                },
+              },
+            },
+          },
+          responses: {
+            '200': { description: 'Request submitted' },
+            '400': { description: 'Missing address' },
+          },
+        },
+      },
+      '/registration/pending': {
+        get: {
+          summary: 'Get pending employee registration requests (HR only)',
+          tags: ['Registration'],
+          responses: {
+            '200': {
+              description: 'List of pending registrations',
+              content: {
+                'application/json': {
+                  schema: {
+                    type: 'array',
+                    items: {
+                      type: 'object',
+                      properties: {
+                        address:     { type: 'string' },
+                        email:       { type: 'string', nullable: true },
+                        requestedAt: { type: 'string' },
+                        status:      { type: 'string' },
+                      },
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+      '/registration/{address}': {
+        delete: {
+          summary: 'Dismiss a registration request (HR only)',
+          tags: ['Registration'],
+          parameters: [{ name: 'address', in: 'path', required: true, schema: { type: 'string' } }],
+          responses: { '200': { description: 'Dismissed' } },
+        },
+      },
     },
   },
   apis: [],

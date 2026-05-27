@@ -7,6 +7,7 @@ import { authRouter }            from "./routes/auth";
 import { bundlerRouter }         from "./routes/bundler";
 import { complianceRouter }      from "./routes/compliance";
 import { webhookRouter }         from "./routes/webhook";
+import registrationRouter        from "./routes/registration";
 import { requireAuth }           from "./middleware/auth";
 import { startLiquidationCron }  from "./services/liquidation";
 import { startPaymasterMonitor } from "./services/paymasterMonitor";
@@ -35,10 +36,11 @@ app.use(express.json());
 app.use("/api-docs", swaggerUi.serve, swaggerUi.setup(swaggerSpecs));
 
 app.get("/health", (_req, res) => res.json({ status: "ok" }));
-app.use("/auth",       authRouter);                    // public — issues JWT
-app.use("/bundler",    requireAuth, bundlerRouter);    // NFR-2: JWT required
-app.use("/compliance", requireAuth, complianceRouter); // NFR-2: JWT required
-app.use("/webhook",    webhookRouter);                 // Alchemy HMAC — no JWT needed
+app.use("/auth",         authRouter);                    // public — issues JWT
+app.use("/bundler",      requireAuth, bundlerRouter);    // NFR-2: JWT required
+app.use("/compliance",   requireAuth, complianceRouter); // NFR-2: JWT required
+app.use("/webhook",      webhookRouter);                 // Alchemy HMAC — no JWT needed
+app.use("/registration", registrationRouter);            // mixed — /request is public, others require JWT
 
 // ── 404 handler ────────────────────────────────────────────────────────────────
 app.use((_req, res) => res.status(404).json({ error: "Not found" }));

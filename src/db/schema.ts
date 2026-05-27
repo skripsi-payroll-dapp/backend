@@ -48,3 +48,15 @@ export const sessions = appSchema.table("sessions", {
   expiresAt: timestamp("expires_at").notNull(), // token expiration timestamp
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
+
+// ── Pending Registrations ─────────────────────────────────────────────────────
+// Tracks unregistered employees who have requested SaaS owner approval
+export const pendingRegistrations = appSchema.table("pending_registrations", {
+  address:     text("address").primaryKey(),               // employee wallet address (lowercase)
+  email:       text("email"),                              // optional contact email
+  name:        text("name"),                               // display name from onboarding form
+  hrAddress:   text("hr_address"),                         // HR who will handle the request
+  status:      text("status").notNull().default("pending"), // "pending" | "approved" | "rejected"
+  requestedAt: timestamp("requested_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt:   timestamp("updated_at",   { withTimezone: true }).notNull().defaultNow(),
+});
